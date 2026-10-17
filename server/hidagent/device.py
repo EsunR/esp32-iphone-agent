@@ -18,7 +18,9 @@ class Device:
         self._reader = self._writer = None
         self._lock = asyncio.Lock()
         self._last = self._beat = 0.0
-        self.links = 0  # bumped on every (re)connect, so gestures know to release and re-home
+        self.links = 0  # bumped on every (re)connect, so gestures release and recover position
+        self.motion_profile = "legacy"
+        self.capabilities: set[str] = set()
 
     @property
     def connected(self) -> bool:
@@ -36,6 +38,9 @@ class Device:
         if self.connected:
             self._writer.close()
         self._reader, self._writer = reader, writer
+        fields = hello.split()
+        self.motion_profile = fields[3] if len(fields) >= 4 and fields[0] == "hello" else "legacy"
+        self.capabilities = set(fields[4:]) if len(fields) >= 4 and fields[0] == "hello" else set()
         self.links += 1
         self._last = self._beat = time.time()  # fresh link: nothing to keep awake yet
         log.info("board connected from %s %s", writer.get_extra_info("peername"), hello)
@@ -48,11 +53,12 @@ class Device:
 
     @staticmethod
     def _timeout(command: str) -> float:
-        """Seconds the board may take: Wi-Fi replies need up to ~2 s at p99, moves are paced
-        (10 units per 8 ms), typing is per character."""
+        """Allow one axis unit per 8 ms, plus Wi-Fi/USB scheduling overhead."""
         name, _, arg = command.partition(" ")
-        if name == "move":
-            return 5 + max(abs(int(n)) for n in arg.split()) / 10 * 0.012
+        if name in ("move", "path"):
+            return 5 + sum(abs(int(n)) for n in arg.split()) * 0.012
+        if name == "fast":
+            return 5 + sum((abs(int(n)) + 9) // 10 for n in arg.split()) * 0.012
         if name == "type":
             return 5 + 0.1 * len(arg)
         if name == "ping":
@@ -90,7 +96,7 @@ class Device:
         seconds (not at the next command), and nudge the pointer now and then so the phone does not auto-lock."""
         while True:
             await asyncio.sleep(heartbeat)
-            if not self.connected or time.time() - self._beat < heartbeat:
+            if not self.connected or self._lock.locked() or time.time() - self._beat < heartbeat:
                 continue
             try:
                 # nudge only a phone that is awake and mirroring: moving a sleeping phone's pointer can stall the

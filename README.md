@@ -54,8 +54,9 @@ uses the same paths a person uses — the screen and a pointer — so the phone 
 - **Brain — a planner and an actor.** A planner model writes a short plan from the goal and the current screen.
   An actor model then looks at each new screenshot and picks the next action: tap, swipe, draw a path, type, press
   a key, go home, or finish. Both roles can be the same model.
-- **Closing the loop.** The pointer is relative, so the server tracks where it is. Before each tap it wiggles the
-  pointer, finds it on the mirrored screen and corrects any miss, refining the calibration as it goes. After each
+- **Closing the loop.** The pointer is relative, so the server tracks where it is. Precise taps and drawing starts
+  locate the pointer on the mirrored screen and correct misses. Drawing only presses after verifying the start.
+  Firmware executes each complete stroke using one axis unit per 8 ms report, matching calibration even for tiny circles. After each
   action it checks whether the screen actually changed and tells the model, so a missed tap is noticed and retried
   instead of built upon. Repeated actions trigger a re-plan; a dropped link or a bad reply is recovered from.
 
@@ -115,7 +116,7 @@ Open `http://<computer-ip>:8890` in a browser.
 2. Plug the board into the phone. A round pointer appears; the web page shows *controller connected*.
 3. **Control Center → Screen Mirroring → iPhone Agent**. The live screen appears in the web page.
 4. In the web page, open **Manual controls → Calibrate**. The server moves the pointer, finds it on the live screen
-   and calibrates itself in a few seconds; if it cannot see the pointer, it asks you to click exactly on it.
+   and calibrates itself; if it cannot see the pointer, it asks you to click exactly on it.
 
 ### 4. Give it a task
 
@@ -184,14 +185,22 @@ Set `HIDAGENT_DEBUG=1` to log every board command with its latency and to save o
 
 ## Board protocol
 
-The board holds no logic. On connecting it sends `hello <last reset reason> <uptime ms>`; then the server sends one
+On connecting the board sends `hello <last reset reason> <uptime ms> unit-v1 fast-v1`; then the server sends one
 command per line over TCP and the board answers `ok` or `err <reason>`.
+`unit-v1` identifies fixed unit motion. Older firmware remains compatible, but upgrading the motion profile
+invalidates the old calibration and requires a new one.
+`fast-v1` adds button-up transit with larger reports and its own automatically measured scale;
+it preserves existing `unit-v1` drawing calibration. Fast landings are visually verified before clicking or drawing.
+The server retains pointer position between actions and after calibration. Stop only releases buttons;
+unknown positions are recovered visually, with corner homing only if the pointer cannot be found.
 
 | Command | Effect |
 |---|---|
 | `ping` | Health check |
 | `home` | Push the pointer into the top-left corner (a known position) |
-| `move <dx> <dy>` | Relative pointer move, at a constant pace so iOS pointer acceleration stays predictable |
+| `move <dx> <dy>` | Interpolated relative movement, one axis unit per report |
+| `fast <dx> <dy>` | Button-up transit, up to 10 axis units per report; requires independent calibration |
+| `path <dx1> <dy1> ...` | Up to 64 continuous relative segments, without network pauses; preserves button state |
 | `press` / `release` / `click` | Left button down / up / both |
 | `scroll <v> <h>` | Scroll wheel |
 | `type <text>` | Type ASCII text |
@@ -230,6 +239,9 @@ These are directions, not promises. If you're interested, or you've tried someth
 - Mirroring stops when the phone locks; keep auto-lock off while the agent works.
 - Keyboard input is ASCII only.
 - Re-calibrate after changing AssistiveTouch tracking speed.
+- To apply the drawing accuracy fix, update both server and firmware, then re-calibrate. Drawing retains slower
+  fixed unit motion; long button-up moves use fast transit when mirroring is available.
+  Yellow overlays on step cards show intended paths, not measured ink.
 - Landscape apps are not supported yet: drawings and taps there land in the wrong place.
 - On Linux machines with several network interfaces, limit Avahi (mDNS) to the interface on the phone's network
   if the phone does not list the receiver.

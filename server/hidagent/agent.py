@@ -11,7 +11,7 @@ from . import vision
 from .debug import Trace
 from .device import DeviceError
 from .llm import LLM
-from .phone import Phone
+from .phone import Phone, drawing_park
 from .screen import Screen
 
 log = logging.getLogger(__name__)
@@ -49,6 +49,8 @@ visible item. If you reached both ends of the list and the item is not there, st
 closest options you saw; do not keep scrolling.
 Only tap things you can actually see on this screenshot; never guess where a button might be.
 If you are unsure what an element does, tap it alone (one DO line) and check the result next round.
+For circles (including a round face or eyes), use circle rather than a hand-written path.
+For any other closed outline, repeat the first point as the final point of the path.
 Actions:
   tap X Y [precise]         (precise: the pointer is located and corrected before tapping, about 1 s slower;
                              use it for small or tightly packed targets: list rows, checkmarks, toggles, small icons)
@@ -86,9 +88,9 @@ def parse_command(line: str) -> dict:
         return {"action": name, keys[0]: rest.strip().strip('"')}
     numbers = [int(float(n)) for n in re.findall(r"-?\d+(?:\.\d+)?", rest)]
     if keys == ("points",):
-        if len(numbers) < 4 or len(numbers) % 2:
-            raise ValueError(f"path needs 2+ x y pairs: {line[:100]}")
-        return {"action": name, "points": [numbers[i:i + 2] for i in range(0, len(numbers), 2)][:20]}
+        if len(numbers) < 4 or len(numbers) > 130 or len(numbers) % 2:
+            raise ValueError(f"path needs 2-65 x y pairs: {line[:100]}")
+        return {"action": name, "points": [numbers[i:i + 2] for i in range(0, len(numbers), 2)]}
     if len(numbers) != len(keys):
         raise ValueError(f"{name} needs {len(keys)} numbers: {line[:100]}")
     action = {"action": name, **dict(zip(keys, numbers, strict=True))}
@@ -286,8 +288,8 @@ class Agent:
         match a["action"]:
             case "tap": await self.phone.tap(p("x"), p("y"), aim=a.get("precise", False) or self._missed())
             case "swipe": await self.phone.swipe(p("x1"), p("y1"), p("x2"), p("y2"))
-            case "path": await self.phone.drag([(x / 1000, y / 1000) for x, y in a["points"]])
-            case "circle": await self.phone.drag(circle(p("x"), p("y"), p("r"), self.screen.aspect))
+            case "path": await self.phone.drag([(x / 1000, y / 1000) for x, y in a["points"]], precise=True)
+            case "circle": await self.phone.drag(circle(p("x"), p("y"), p("r"), self.screen.aspect), precise=True)
             case "type": await self.phone.type(a["text"])
             case "key": await self.phone.key(a["combo"])
             case "home": await self.phone.go_home()
@@ -302,8 +304,9 @@ def _pointer_path(act: dict) -> list[tuple[float, float]]:
     match act["action"]:
         case "tap": return [f(act["x"], act["y"])]
         case "swipe": return [f(act["x1"], act["y1"]), f(act["x2"], act["y2"])]
-        case "path": return [f(*p) for p in act["points"]]
-        case "circle": return [f(act["x"] + act["r"], act["y"])]
+        # Mask only the lifted pointer, not the ink we need to detect.
+        case "path": return [drawing_park(*f(*act["points"][-1]))]
+        case "circle": return [drawing_park(*f(act["x"] + act["r"], act["y"]))]
         case "home": return [(0.5, 0.995), (0.5, 0.6)]
         case "back": return [(0.005, 0.45), (0.6, 0.45)]
         case _: return []

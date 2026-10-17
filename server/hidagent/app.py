@@ -107,6 +107,8 @@ def index():
 @app.get("/api/status")
 def status():
     return {"device": device.connected, "screen": screen.live, "calibrated": phone.calibrated,
+            "motion_profile": getattr(device, "motion_profile", "legacy"),
+            "capabilities": sorted(getattr(device, "capabilities", ())),
             "debug": DEBUG, "trace": str(agent.trace.dir or ""), "aspect": round(screen.aspect, 4),
             "models": {"planner": agent.planner.model, "actor": agent.actor.model},
             "agent": {"running": agent.running, "task": agent.task, "steps": agent.steps}}
@@ -124,6 +126,14 @@ def step_shot(index: int):
     if index not in agent.shots:
         raise HTTPException(404)
     return Response(agent.shots[index], media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
+
+
+@app.post("/api/point")
+async def point(p: Point):
+    async def move():
+        if not await phone.point(p.x, p.y, aim=True):
+            raise RuntimeError("cannot verify pointer position; check screen mirroring")
+    return await act(move)
 
 
 @app.post("/api/tap")
@@ -187,7 +197,10 @@ async def calibrate_finish(p: Point):
     check_manual()
     if not 0 < p.x < 1 or not 0 < p.y < 1:
         raise HTTPException(422, "calibration pointer must be inside the screen")
-    phone.finish_calibration(p.x, p.y)
+    try:
+        phone.finish_calibration(p.x, p.y)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from e
     return {"ok": True, "span": phone.span}
 
 

@@ -19,6 +19,9 @@ def api(tmp_path, monkeypatch):
     class Phone:
         span = {"w": 400, "h": 800}
         calibrated = True
+        async def point(self, x, y, aim=False):
+            calls.append(("point", x, y, aim))
+            return True
         async def tap(self, x, y): calls.append(("tap", x, y))
         async def type(self, text): calls.append(("type", text))
         async def key(self, text): calls.append(("key", text))
@@ -38,6 +41,26 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "screen", SimpleNamespace(live=True, frame=b"jpeg", aspect=.46))
     monkeypatch.setattr(module, "manual_lock", asyncio.Lock())
     return module, calls
+
+
+def test_verified_point_moves_without_clicking_and_respects_busy_guard(api, monkeypatch):
+    module, calls = api
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=module.app), base_url="http://test") as client:
+            assert (await client.post("/api/point", json={"x": .4, "y": .6})).status_code == 200
+            assert calls == [("point", .4, .6, True)]
+            assert (await client.post("/api/point", json={"x": 2, "y": .6})).status_code == 422
+            module.agent.running = True
+            assert (await client.post("/api/point", json={"x": .4, "y": .6})).status_code == 409
+            module.agent.running = False
+
+            async def missing(*args, **kwargs): return False
+            monkeypatch.setattr(module.phone, "point", missing)
+            assert (await client.post("/api/point", json={"x": .4, "y": .6})).status_code == 409
+            assert len(calls) == 1
+
+    asyncio.run(scenario())
 
 
 def test_client_uses_legacy_routes_and_single_current_task():

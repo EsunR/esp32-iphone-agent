@@ -35,13 +35,15 @@ def changed(before: bytes | None, after: bytes | None, ignore: tuple = (), thres
     return hits >= 6
 
 
-def pointer(before: bytes, after: bytes, near: tuple[float, float], shift: float,
-            reach: tuple[float, float] = (0.12, 0.08)) -> tuple[float, float] | None:
+def pointer(before: bytes, after: bytes, near: tuple[float, float], shift: float | None,
+            reach: tuple[float, float] = (0.12, 0.08), direction: int = 1) -> tuple[float, float] | None:
     """Where the pointer is in `before`, given it moved right by `shift` (fraction of width) in `after`.
 
     Only the pointer moved between the two frames, so the changed pixels within `reach` of `near` are the
     pointer at both spots; their centroid sits shift/2 to the right of the first one. None if unclear:
     nothing moved, or the change is too big or too spread out to be one small pointer.
+    With shift=None, measure the horizontal translation rather than assuming the
+    calibration being checked is already accurate. direction selects left/right.
     """
     a, b = _gray(before), _gray(after)
     if a.size != b.size:
@@ -58,6 +60,26 @@ def pointer(before: bytes, after: bytes, near: tuple[float, float], shift: float
     xs, ys = [x for x, _ in hits], [y for _, y in hits]
     if max(xs) - min(xs) > 0.15 * w or max(ys) - min(ys) > 0.07 * h:  # not one compact spot
         return None
+    if shift is None:
+        # Match the changed patch after a horizontal translation. Include the
+        # surrounding background to reject unrelated animation or a fading dot.
+        patch = (max(0, left + min(xs) - 4), max(0, top + min(ys) - 4),
+                 min(w, left + max(xs) + 5), min(h, top + max(ys) + 5))
+        original = a.crop(patch)
+
+        def error(dx):
+            moved = b.crop((patch[0] + dx, patch[1], patch[2] + dx, patch[3]))
+            histogram = ImageChops.difference(original, moved).histogram()
+            return sum(i * count for i, count in enumerate(histogram))
+
+        candidates = [d * (1 if direction > 0 else -1) for d in range(1, int(0.15 * w) + 1)]
+        candidates = [d for d in candidates if 0 <= patch[0] + d and patch[2] + d <= w]
+        if not candidates:
+            return None
+        displacement = min(candidates, key=error)
+        if error(displacement) >= error(0) * 0.6:
+            return None
+        shift = displacement / w
     cx = sum(x for x, _ in hits) / len(hits) + left
     cy = sum(y for _, y in hits) / len(hits) + top
     return cx / w - shift / 2, cy / h

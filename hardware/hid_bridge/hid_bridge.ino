@@ -3,6 +3,8 @@
 //
 // Protocol (one command per line, the board answers "ok" or "err <why>"):
 //   ping | home | move <dx> <dy> | press | release | click
+//   fast <dx> <dy> (button-up transit only; separately calibrated)
+//   path <dx1> <dy1> ... <dx64> <dy64> (continuous relative segments)
 //   scroll <v> <h> | type <ascii text> | key <combo, e.g. cmd+h, enter>
 
 #include <WiFi.h>
@@ -11,10 +13,10 @@
 #include "USBHIDMouse.h"
 #include "USBHIDKeyboard.h"
 #include "tusb.h"
+#include "motion.h"
 #include "secrets.h"  // WIFI_SSID, WIFI_PASS, SERVER_HOST, SERVER_PORT
 
-const int STEP = 10;      // max pointer delta per report while moving
-const int STEP_MS = 8;    // report interval; constant pace keeps iOS acceleration predictable
+const int STEP_MS = 8;    // one axis unit per report, for calibration and every path segment
 const int HOME_REPORTS = 50;
 #ifndef DEBUG_SERIAL
 #define DEBUG_SERIAL 0  // 1: echo every command over USB serial (needs CDCOnBoot=cdc)
@@ -26,14 +28,40 @@ USBHIDMouse mouse;
 USBHIDKeyboard keyboard;
 WiFiClient server;
 
-void movePaced(long dx, long dy) {
-  while (dx || dy) {
-    int sx = constrain(dx, -STEP, STEP), sy = constrain(dy, -STEP, STEP);
+bool sendMotion(int sx, int sy) {
+    esp_task_wdt_reset();
+    if (!server.connected() || !tud_mounted() || tud_suspended()) {
+      mouse.release(MOUSE_LEFT);
+      return false;
+    }
     mouse.move(sx, sy);
-    dx -= sx;
-    dy -= sy;
     delay(STEP_MS);
+    return true;
+}
+
+bool movePaced(long dx, long dy) {
+  return walkLine(dx, dy, sendMotion);
+}
+
+String runPath(const String &arg) {
+  long deltas[128];
+  int count = 0;
+  const char *p = arg.c_str();
+  // Validate the entire path before sending any HID report.
+  while (*p) {
+    while (*p == ' ') ++p;
+    if (!*p) break;
+    char *end;
+    long value = strtol(p, &end, 10);
+    if (end == p || (*end && *end != ' ') || count == 128 || value < -10000 || value > 10000)
+      return "err invalid path";
+    deltas[count++] = value;
+    p = end;
   }
+  if (!count || count % 2) return "err invalid path";
+  for (int i = 0; i < count; i += 2)
+    if (!movePaced(deltas[i], deltas[i + 1])) return "err motion interrupted";
+  return "ok";
 }
 
 uint8_t keyCode(const String &k) {
@@ -88,7 +116,12 @@ String run(const String &line) {
     for (int i = 0; i < HOME_REPORTS; i++) { mouse.move(-127, -127); delay(2); }
     return "ok";
   }
-  if (cmd == "move") { movePaced(a, b); return "ok"; }
+  if (cmd == "move") { return movePaced(a, b) ? "ok" : "err motion interrupted"; }
+  if (cmd == "fast") {
+    if (mouse.isPressed(MOUSE_LEFT)) return "err fast movement requires button up";
+    return walkFast(a, b, sendMotion) ? "ok" : "err motion interrupted";
+  }
+  if (cmd == "path") { return runPath(arg); }
   if (cmd == "press") { mouse.press(MOUSE_LEFT); return "ok"; }
   if (cmd == "release") { mouse.release(MOUSE_LEFT); return "ok"; }
   if (cmd == "click") { mouse.press(MOUSE_LEFT); delay(60); mouse.release(MOUSE_LEFT); return "ok"; }
@@ -135,7 +168,7 @@ void loop() {
     keyboard.releaseAll();
     if (!server.connect(SERVER_HOST, SERVER_PORT, 1000)) { delay(200); return; }  // retry fast: show up at once
     server.setNoDelay(true);
-    server.printf("hello %s %lu\n", resetReason(), millis());  // why the board last restarted, and uptime
+    server.printf("hello %s %lu unit-v1 fast-v1\n", resetReason(), millis());
 #if DEBUG_SERIAL
     Serial.printf("connected to %s:%d as %s after %lu ms\n", SERVER_HOST, SERVER_PORT,
                   WiFi.localIP().toString().c_str(), millis());

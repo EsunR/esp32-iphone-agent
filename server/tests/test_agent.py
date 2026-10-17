@@ -52,6 +52,18 @@ def test_circle_is_closed_and_round_on_a_tall_screen():
         assert math.hypot(x - 0.5, (y - 0.5) / aspect) == pytest.approx(0.2)
 
 
+def test_path_does_not_silently_drop_the_closing_point():
+    points = [(100 + i, 200) for i in range(20)] + [(100, 200)]
+    action = parse_command("path " + " ".join(str(v) for p in points for v in p))
+    assert action["points"][0] == action["points"][-1]
+    assert len(action["points"]) == 21
+
+
+def test_path_rejects_excess_points_instead_of_truncating():
+    with pytest.raises(ValueError):
+        parse_command("path " + "100 200 " * 66)
+
+
 def test_actor_may_not_repeat_a_move_that_changed_nothing():
     import asyncio
 

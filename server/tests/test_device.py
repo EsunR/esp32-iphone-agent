@@ -9,6 +9,29 @@ def test_timeout_grows_with_move_distance_and_text_length():
     assert Device._timeout("click") == 5
     assert Device._timeout("move 1000 -20") > Device._timeout("move 10 10") >= 5
     assert Device._timeout("type " + "x" * 40) > Device._timeout("type hi")
+    assert Device._timeout("path 100 200 -100 -200") >= 600 * .008 + 5
+    assert 5 < Device._timeout("fast 1001 -21") < Device._timeout("move 1001 -21")
+
+
+@pytest.mark.parametrize("hello,profile,capabilities", [
+    ("hello power-on 123", "legacy", set()),
+    ("hello power-on 123 unit-v1", "unit-v1", set()),
+    ("hello power-on 123 unit-v1 fast-v1", "unit-v1", {"fast-v1"}),
+])
+def test_greeting_separates_calibration_profile_from_capabilities(hello, profile, capabilities):
+    class Writer:
+        def is_closing(self): return False
+        def get_extra_info(self, key): return ("fake-board", 7300)
+
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data((hello + "\n").encode())
+        device = Device()
+        await device._accept(reader, Writer())
+        assert device.motion_profile == profile
+        assert device.capabilities == capabilities
+
+    asyncio.run(scenario())
 
 
 def test_send_without_board_fails_fast():

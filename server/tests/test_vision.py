@@ -49,6 +49,15 @@ def test_pointer_not_found_when_nothing_moved():
     assert pointer(frame, frame, near=(0.5, 0.8), shift=12 / W) is None
 
 
+@pytest.mark.parametrize("dx", [-20, -5, 3, 8, 20])
+def test_pointer_measures_nudge_without_trusting_calibration(dx):
+    found = pointer(screen((262, 856)), screen((262 + dx, 856)), near=(.5, .8),
+                    shift=None, direction=dx)
+    assert found is not None
+    assert found[0] * W == pytest.approx(262, abs=3)
+    assert found[1] * H == pytest.approx(856, abs=3)
+
+
 def checkmark_screen(checked: bool, pointer_at=(100, 500)) -> bytes:
     img = Image.open(io.BytesIO(screen(pointer_at))).convert("RGB")
     if checked:
@@ -72,3 +81,17 @@ def test_pointer_far_from_the_target_is_found_with_a_full_screen_search():
     assert pointer(before, after, near=(0.9, 0.1), shift=12 / W) is None  # outside the window near the target
     found = pointer(before, after, near=(0.5, 0.5), shift=12 / W, reach=(0.5, 0.5))
     assert found[0] * W == pytest.approx(354, abs=3) and found[1] * H == pytest.approx(136, abs=3)
+
+
+def test_small_drawn_circle_is_not_hidden_by_pointer_feedback_mask():
+    from hidagent.agent import _pointer_path
+
+    act = {"action": "circle", "x": 650, "y": 650, "r": 17}
+    parked = _pointer_path(act)[0]
+    before = screen((100, 500))
+    im = Image.open(io.BytesIO(screen((parked[0] * W, parked[1] * H)))).convert("RGB")
+    x, y, r = .65 * W, .65 * H, .017 * W
+    ImageDraw.Draw(im).ellipse((x - r, y - r, x + r, y + r), outline="black", width=2)
+    data = io.BytesIO()
+    im.save(data, "JPEG", quality=75)
+    assert changed(before, data.getvalue(), ignore=((100 / W, 500 / H), parked))
